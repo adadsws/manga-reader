@@ -1,0 +1,23 @@
+{
+  "token": "reader-local",
+  "tts_url": "http://127.0.0.1:9882",
+  "reference_audio": "models/gpt-sovits/终末地-中文/V4/洛茜/reference.wav",
+  "reference_text": "这就证明我是最出色的干员了吧？不知道卡特洛有没有这么顺利。下次再见到那家伙，我可要好好炫耀一下！",
+  "save_debug_pages": false,
+  "voice": "luoxi",
+  "voice_name": "洛茜",
+  "prompt_lang": "zh",
+  "text_split_method": "cut0",
+  "speech_mode": "native",
+  "top_k": 5,
+  "model_version": "V4",
+  "speech_guard": "all",
+  "startup_warmup": true,
+  "ocr_device": "cuda",
+  "asr_device": "cuda",
+  "tts_parallel_infer": true,
+  "tts_batch_size": 1,
+  "full_page_prefetch_max_units": 24,
+  "full_page_prefetch_max_bytes": 67108864,
+  "repetition_penalty": 1.0
+}

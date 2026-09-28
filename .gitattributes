@@ -1,0 +1,7 @@
+* text=auto eol=lf
+*.bat text eol=crlf
+*.jpg -text
+*.png -text
+*.wav -text
+reader.apk -text
+reference/** -text -whitespace

@@ -1,0 +1,27 @@
+{
+  "voice": "hina",
+  "directory": "models/gpt-sovits/蔚蓝档案-日语/v4/格黑娜/日奈",
+  "source": "user-provided; original URL unverified",
+  "files": [
+    {
+      "name": "train.log",
+      "bytes": 2644,
+      "sha256": "3a805be6e7a1bb97d9f7fa6715809a0f8124c8b0a30cdfe4ded409c537b10522"
+    },
+    {
+      "name": "【默认】風紀委員長のヒナ。私の名前は知ってると思うけど…。よろしく。.wav",
+      "bytes": 605120,
+      "sha256": "836f1200afbfb14c9181edc7c430e30f94c42e8987f6e27567b9be458fe2470c"
+    },
+    {
+      "name": "日奈-e10.ckpt",
+      "bytes": 155312893,
+      "sha256": "e317764077c122968287812433b86929e47b8ff3cd11dd74d8a17af2edf55045"
+    },
+    {
+      "name": "日奈_e10_s160_l32.pth",
+      "bytes": 75549998,
+      "sha256": "8f626e10a1f1a7537964a574cdb8274ffae959b390975f8ce70eae6e3513d50f"
+    }
+  ]
+}

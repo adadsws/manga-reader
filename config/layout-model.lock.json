@@ -1,0 +1,16 @@
+{
+  "repository": "ragavsachdeva/magiv2",
+  "revision": "fbc890fec52977142e8ee00bfe26e9458b65517c",
+  "filename": "pytorch_model.bin",
+  "bytes": 2063693064,
+  "sha256": "56392403204d3a4cca38694a3a260a6929d741869d802d6b14de35b4eab4c4b8",
+  "url": "https://huggingface.co/ragavsachdeva/magiv2/resolve/fbc890fec52977142e8ee00bfe26e9458b65517c/pytorch_model.bin",
+  "code": {
+    "config.json": "d55b3b0b6c16d61c97c4afd79b0d0e9b2371a4a3442f7dbef2ff838cb089e19f",
+    "configuration_magiv2.py": "28e65be99f4287dea300a49ae65ced263054b756113d1f37baf8f1b0fd94e72b",
+    "modelling_magiv2.py": "1188ebcb84985fe812e222e51bf0889c586bdbe6f2913f7cbefaf43ffe74e6de",
+    "processing_magiv2.py": "2ff8e760e65848ee5d02eaca84ce24381ced97e4cbcf26d2f838d05362a946a8",
+    "README.md": "e66a3e036dddd8b2437a1caa80e4bab5c1685220be498b5e82d230ce679873a2",
+    "utils.py": "ea9d9182ee2d02f8dba1cca634dfc3e3528bab50de9e9efa286822ac5ee3195f"
+  }
+}

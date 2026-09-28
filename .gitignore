@@ -1,0 +1,17 @@
+# 可由固定工具、配置和源码重建的环境与产物。
+/~temp/
+/~outputs-intermediate/
+/~outputs-final/
+# 本地模型实际文件约 50 GiB，不提交；同级同名 Markdown 记录来源和重建方法。
+/models/*
+!/models/gpt-sovits/
+/models/gpt-sovits/*
+!/models/gpt-sovits/蔚蓝档案-日语.md
+!/models/gpt-sovits/终末地-中文.md
+!/models/layout/
+/models/layout/*
+!/models/layout/magiv2.md
+# Python 工具原地字节码缓存。
+__pycache__/
+# Ruff 原地格式化缓存。
+.ruff_cache/

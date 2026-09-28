@@ -1,0 +1,15 @@
+{
+  "purpose": "Offline regression validation only; not used in the production reading flow",
+  "runtime": "python",
+  "funasr": "1.0.27",
+  "model_path": "models/gpt-sovits/pretrained/tools/asr_models/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+  "files_sha256": {
+    "model.pt": "5bba782a5e9196166233b9ab12ba04cadff9ef9212b4ff6153ed9290ff679025",
+    "config.yaml": "35438403286ade9fd080e83592c497aaa65ac62ea24071cd33482b883fb7c90c",
+    "configuration.json": "96912f1e956bba5a451ee3e361aa72089b09edb1359fae35abdf5ca5f3186524",
+    "am.mvn": "38450e989178a72715b96b7e0b6072ba1e06f3334a56462ab465704f014e1105",
+    "tokens.json": "bea7d6e8bf3b5f5d30ec29d178b4975af84cb6a5c0c5c47e78cd8c615bb0e2f1",
+    "seg_dict": "5a1a69ed5393bdfd9b8197ef982b92529b4df92a89dc5763f8ab96eddfae4a21"
+  },
+  "source": "Local GPT-SoVITS pretrained assets; restore separately"
+}
