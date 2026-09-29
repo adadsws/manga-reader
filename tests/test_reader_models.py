@@ -1,7 +1,9 @@
 # 动态模型目录扫描、archive排除、状态和安全切模。
+import io
 import json
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 from server.model_catalog import ModelCatalog
@@ -94,5 +96,16 @@ class ModelCatalogTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,'坏权重'):catalog.select(model_id)
             failed=catalog.scan()['models'][0]
             self.assertEqual(failed['state'],'failed');self.assertTrue(failed['selectable']);self.assertIn('坏权重',failed['errors'][0])
+
+    def test_upstream_http_error_keeps_model_load_reason(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)/'models/gpt-sovits';self.files(root/'作品/v4/角色')
+            catalog=ModelCatalog(root,{'tts_url':'http://tts','voice_name':'角色','model_version':'v4'},Path(temp)/'state.json')
+            model_id=catalog.scan()['models'][0]['id']
+            response=io.BytesIO(json.dumps({'message':'change gpt weight failed','Exception':'CUDA error: unknown error'}).encode())
+            failure=urllib.error.HTTPError('http://tts/set_gpt_weights',400,'Bad Request',{},response)
+            with patch('server.model_catalog.urllib.request.urlopen',side_effect=failure):
+                with self.assertRaisesRegex(RuntimeError,'set_gpt_weights HTTP 400.*CUDA error: unknown error'):
+                    catalog.select(model_id)
 
 if __name__=='__main__':unittest.main()

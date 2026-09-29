@@ -2,6 +2,11 @@
 setlocal
 chcp 65001 >nul
 title 漫画朗读 - 仅启动安卓模拟器
+if /i "%~1"=="keep-service" goto start_emulator
+echo [准备] 正在停止本项目已启动的电脑服务…
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\stop.ps1"
+if errorlevel 1 exit /b %errorlevel%
+:start_emulator
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\start_emulator.ps1"
 set "reader_exit=%errorlevel%"
 if "%reader_exit%"=="0" (

@@ -4,6 +4,7 @@ import json
 import re
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -245,12 +246,22 @@ class ModelCatalog:
     def _load(self,item):
         for endpoint,path in (("set_gpt_weights",item["gpt"]),("set_sovits_weights",item["sovits"])):
             url=self.settings["tts_url"].rstrip("/")+"/"+endpoint+"?"+urllib.parse.urlencode({"weights_path":str(path)})
-            with urllib.request.urlopen(url,timeout=240) as response:
-                body=response.read()
-                if response.status!=200:raise RuntimeError(endpoint+" HTTP "+str(response.status))
-                try:payload=json.loads(body)
-                except ValueError:payload={"raw":body.decode("utf-8",errors="replace")}
-                if isinstance(payload,dict) and payload.get("message") not in (None,"success","Success") and payload.get("code") not in (None,0):raise RuntimeError(endpoint+"："+str(payload))
+            try:
+                with urllib.request.urlopen(url,timeout=240) as response:
+                    body=response.read()
+                    if response.status!=200:raise RuntimeError(endpoint+" HTTP "+str(response.status))
+                    try:payload=json.loads(body)
+                    except ValueError:payload={"raw":body.decode("utf-8",errors="replace")}
+                    if isinstance(payload,dict) and payload.get("message") not in (None,"success","Success") and payload.get("code") not in (None,0):raise RuntimeError(endpoint+"："+str(payload))
+            except urllib.error.HTTPError as exc:
+                # GPT-SoVITS 把权重加载异常放在 400 JSON 正文中；保留正文供安卓和诊断日志显示根因。
+                raw=exc.read().decode("utf-8",errors="replace")
+                try:
+                    error=json.loads(raw)
+                    parts=[str(error.get(key)) for key in ("message","Exception","detail") if error.get(key)] if isinstance(error,dict) else []
+                    detail="：".join(parts) or raw
+                except ValueError:detail=raw
+                raise RuntimeError(f"{endpoint} HTTP {exc.code}：{detail or exc.reason}") from exc
 
     def select(self,model_id,persist=True,probe=None):
         with self.lock:
