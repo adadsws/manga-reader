@@ -4,7 +4,7 @@ package org.local.reader;
 final class ReaderDefaults {
   static final String ADDRESS = "http://10.0.2.2:8765";
   static final String TOKEN = "reader-local";
-  static final String MODEL_LABEL = "洛茜 · V4 · 洛茜_e16_s544_l32";
+  static final String MODEL_LABEL = "日奈 · v4 · 日奈_e10_s160_l32";
   static final int SENTENCE_GAP_MS = 100;
   static final int SPEECH_SPEED_PERCENT = 90;
   static final boolean AUTO_FLIP = true;

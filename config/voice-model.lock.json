@@ -1,7 +1,13 @@
 {
   "voice": "hina",
   "directory": "models/gpt-sovits/蔚蓝档案-日语/v4/格黑娜/日奈",
-  "source": "user-provided; original URL unverified",
+  "source": {
+    "repository": "aihobbyist/GPT-SoVITS_Model_Collection",
+    "revision": "afe9e5fe34392e87739b9a8445ce5028c0d2ab65",
+    "path": "蔚蓝档案/日语/日奈.zip",
+    "bytes": 213397439,
+    "sha256": "ee1c58d9d8560229c6e0a7672d29279f68ecf9aee4683c6bc194838ee31db6e9"
+  },
   "files": [
     {
       "name": "train.log",
@@ -12,6 +18,11 @@
       "name": "【默认】風紀委員長のヒナ。私の名前は知ってると思うけど…。よろしく。.wav",
       "bytes": 605120,
       "sha256": "836f1200afbfb14c9181edc7c430e30f94c42e8987f6e27567b9be458fe2470c"
+    },
+    {
+      "name": "角色头像.webp",
+      "bytes": 20624,
+      "sha256": "1a00afbaf7bc63d37573c3aba168468663967b71a21ffeaca6cd219b742fdbbc"
     },
     {
       "name": "日奈-e10.ckpt",

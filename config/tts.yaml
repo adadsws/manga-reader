@@ -3,9 +3,9 @@ custom:
   cnhuhbert_base_path: GPT_SoVITS/pretrained_models/chinese-hubert-base
   device: cuda:0
   is_half: true
-  t2s_weights_path: models/gpt-sovits/终末地-中文/V4/洛茜/洛茜-e10.ckpt
+  t2s_weights_path: models/gpt-sovits/蔚蓝档案-日语/v4/格黑娜/日奈/日奈-e10.ckpt
   version: v4
-  vits_weights_path: models/gpt-sovits/终末地-中文/V4/洛茜/洛茜_e16_s544_l32.pth
+  vits_weights_path: models/gpt-sovits/蔚蓝档案-日语/v4/格黑娜/日奈/日奈_e10_s160_l32.pth
 v1:
   bert_base_path: GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large
   cnhuhbert_base_path: GPT_SoVITS/pretrained_models/chinese-hubert-base
