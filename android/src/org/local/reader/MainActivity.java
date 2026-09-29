@@ -339,14 +339,20 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "请先允许浮窗", 0).show();
             return;
           }
-          startActivityForResult(
-              ((MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE))
-                  .createScreenCaptureIntent(),
-              7);
+          startActivityForResult(screenCaptureIntent(), 7);
         });
     button(startup, "关闭朗读服务和浮窗", () -> stopService(new Intent(this, ReaderService.class)));
-    label(startup, "启动后选择“整个屏幕”，切换到漫画阅读器，点击浮窗“读”。截图时浮窗会短暂隐藏。", 15);
+    label(startup, "确认共享整个屏幕后，切换到漫画阅读器，点击浮窗“读”。截图时浮窗会短暂隐藏。", 15);
     label(startup, "暂停只停止播放，后台继续处理本页；继续从原位置恢复。全部停止会取消并清空本页，重新开始时再次截图。×：关闭整个浮窗服务。", 14);
+  }
+
+  Intent screenCaptureIntent() {
+    MediaProjectionManager manager =
+        (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
+    // Android 14+ 默认允许只共享单个应用；Reader 切到相册后必须仍能捕获整屏。
+    if (Build.VERSION.SDK_INT >= 34)
+      return manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay());
+    return manager.createScreenCaptureIntent();
   }
 
   @Override protected void onResume() {

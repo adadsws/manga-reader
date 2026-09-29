@@ -217,6 +217,17 @@ public class AutoFlipTests extends Instrumentation {
       saved.edit().putInt("sentenceGapMs",ReaderDefaults.SENTENCE_GAP_MS).commit();
       saved.edit().putInt("speechSpeedPercent",ReaderDefaults.SPEECH_SPEED_PERCENT).putInt("overlayOpacityPercent",ReaderDefaults.OVERLAY_OPACITY_PERCENT).putBoolean("adaptiveCapture",ReaderDefaults.ADAPTIVE_CAPTURE).putBoolean("historyReuse",ReaderDefaults.HISTORY_REUSE).putBoolean("historyPromote",ReaderDefaults.HISTORY_PROMOTE).commit();
       MainActivity activity=(MainActivity)startActivitySync(new android.content.Intent(getTargetContext(),MainActivity.class).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
+      if (android.os.Build.VERSION.SDK_INT>=34) {
+        android.content.Intent capture=activity.screenCaptureIntent();
+        android.os.Bundle extras=capture.getExtras();
+        boolean entireScreen=false;
+        if (extras!=null) for (String key:extras.keySet()) {
+          Object value=extras.get(key);
+          if (value instanceof android.media.projection.MediaProjectionConfig
+              && value.equals(android.media.projection.MediaProjectionConfig.createConfigForDefaultDisplay())) entireScreen=true;
+        }
+        check(entireScreen,"Android 14+ projection is fixed to the entire screen"); passed++;
+      }
       ui(() -> {
         Button advanced=findButton(activity.getWindow().getDecorView(),"高级选项");
         CheckBox vision=(CheckBox)findButton(activity.getWindow().getDecorView(),"OCR 与分镜并行");
