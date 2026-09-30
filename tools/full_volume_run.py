@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / '~outputs-intermediate/evidence/full-volume-20260920'
 RAW = ROOT / '~outputs-intermediate/pages'
 ADB = ROOT / '~temp/android-sdk/platform-tools/adb.exe'
-SOURCE = ROOT / 'secrets/manga/[不可不可 (関谷あさみ)] インスタントサッキュ 丨 魅魔的速食性愛 [中国翻訳] [無修正] [DL版]'
+SOURCE = ROOT / 'secrets/manga/full-volume'
 ALBUM = '/sdcard/Pictures/ReaderVolume20260920'
 
 

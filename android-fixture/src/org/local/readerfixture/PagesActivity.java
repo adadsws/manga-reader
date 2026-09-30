@@ -10,6 +10,7 @@ import android.widget.*;
 public class PagesActivity extends Activity {
   String[] pages = {"0012.jpg", "0009.jpg", "0041.jpg"};
   int index = 0;
+  boolean blankFirst;
   float start;
   ImageView image;
 
@@ -20,13 +21,14 @@ public class PagesActivity extends Activity {
     image = new ImageView(this);
     image.setBackgroundColor(Color.WHITE);
     image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+    blankFirst = getIntent().getBooleanExtra("blank_first", false);
     setContentView(image);
     show();
     image.setOnTouchListener(
         (v, e) -> {
           if (e.getAction() == 0) start = e.getX();
           if (e.getAction() == 1 && Math.abs(e.getX() - start) > 80) {
-            index = Math.min(index + 1, pages.length - 1);
+            index = Math.min(index + 1, blankFirst ? pages.length : pages.length - 1);
             show();
           }
           return true;
@@ -34,9 +36,15 @@ public class PagesActivity extends Activity {
   }
 
   void show() {
-    try (java.io.InputStream s = getAssets().open(pages[index])) {
+    if (blankFirst && index == 0) {
+      image.setImageDrawable(null);
+      android.util.Log.i("ReaderFixture", "PAGE 0 BLANK");
+      return;
+    }
+    int pageIndex = blankFirst ? index - 1 : index;
+    try (java.io.InputStream s = getAssets().open(pages[pageIndex])) {
       image.setImageBitmap(BitmapFactory.decodeStream(s));
-      android.util.Log.i("ReaderFixture", "PAGE " + index + " " + pages[index]);
+      android.util.Log.i("ReaderFixture", "PAGE " + index + " " + pages[pageIndex]);
     } catch (Exception e) {
       throw new RuntimeException(e);
     }

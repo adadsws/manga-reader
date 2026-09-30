@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from server.app import (
     app, settings, store, synthesize, warmup_state, ensure_audio, audio_tasks,
     page_prefetch_tasks, prefetch_page_audio, select_prefetch_mode,
+    READER_PROTOCOL_VERSION, observe_android_version,
 )
 
 
@@ -189,7 +190,45 @@ class ReaderApiTests(unittest.TestCase):
             self.assertEqual(response.status_code,502);self.assertIn("模型加载失败",response.text)
     def test_pair_checks_token(self):
         self.assertEqual(self.client.get("/pair").status_code, 401)
-        self.assertEqual(self.client.get("/pair", headers=self.auth).status_code, 200)
+        pair = self.client.get(
+            "/pair", headers={**self.auth, "X-Reader-Version": "4"}
+        )
+        self.assertEqual(pair.status_code, 200)
+        self.assertEqual(pair.json()["version"], READER_PROTOCOL_VERSION)
+        self.assertEqual(self.client.get("/health").json()["version"], 4)
+
+    def test_computer_warns_for_old_or_different_android_without_blocking(self):
+        import server.app as reader_app
+        original = reader_app.last_android_version_state
+        try:
+            reader_app.last_android_version_state = None
+            with patch("server.app.event") as debug:
+                self.assertEqual(observe_android_version(None), "missing")
+                debug.assert_called_once_with(
+                    "android_version_missing", computer_version=4
+                )
+                debug.reset_mock()
+                self.assertEqual(observe_android_version(None), "missing")
+                debug.assert_not_called()
+                self.assertEqual(observe_android_version("3"), "mismatch")
+                debug.assert_called_once_with(
+                    "android_version_mismatch",
+                    android_version=3,
+                    computer_version=4,
+                )
+                debug.reset_mock()
+                self.assertEqual(observe_android_version("4"), "match")
+                debug.assert_not_called()
+                self.assertEqual(observe_android_version("invalid"), "missing")
+                debug.assert_called_once_with(
+                    "android_version_missing", computer_version=4
+                )
+            response = self.client.get(
+                "/pair", headers={"X-Reader-Token": settings["token"]}
+            )
+            self.assertEqual(response.status_code, 200)
+        finally:
+            reader_app.last_android_version_state = original
 
     def test_corrected_text_order_and_cancellation(self):
         response = self.client.post(

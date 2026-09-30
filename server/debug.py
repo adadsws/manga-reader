@@ -10,7 +10,8 @@ from pathlib import Path
 LOG = Path(__file__).resolve().parents[1] / '~temp/logs/debug.jsonl'
 _guard = threading.Lock()
 _logger = None
-FIELDS = {'bytes', 'rows', 'chunks', 'chunk', 'characters', 'seconds', 'status', 'index'}
+FIELDS = {'bytes', 'rows', 'chunks', 'chunk', 'characters', 'seconds', 'status', 'index',
+          'android_version', 'computer_version'}
 REASON_EVENTS = {'tts_error', 'model_load_error', 'warmup_error'}
 
 def event(name, **fields):

@@ -22,6 +22,9 @@ class LiveDebugTests(unittest.TestCase):
         self.assertIn('继续朗读',format_event({'event':'tts_coverage_unverified'}))
         self.assertIn('已保留通过片段',format_event({'event':'tts_recovery_partial'}))
         self.assertIn('启动预热全部完成',format_event({'event':'warmup_ready','seconds':12.3}))
+        warning=format_event({'event':'android_version_mismatch','android_version':3,'computer_version':4})
+        self.assertIn('版本警告',warning);self.assertIn('安卓版本=3',warning);self.assertIn('电脑版本=4',warning)
+        self.assertIn('旧版',format_event({'event':'android_version_missing','computer_version':4}))
         self.assertNotIn('不应显示',format_event({'event':'tts_start','reason':'不应显示'}))
 
     def test_android_tag_payload_is_strict(self):

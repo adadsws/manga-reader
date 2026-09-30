@@ -11,7 +11,7 @@ public class AutoFlipTests extends Instrumentation {
   MockReader service;
   int passed;
   class MockReader extends ReaderService {
-    int captures, clears, releases, loads, fetches, plays, lastFetched=-1;
+    int captures, clears, releases, loads, fetches, plays, turns, lastFetched=-1;
     long loadedAt;
     String message;
     MockReader() {
@@ -30,7 +30,7 @@ public class AutoFlipTests extends Instrumentation {
       earlyPrefetch = preferences.getBoolean("earlyPrefetch", ReaderDefaults.EARLY_PREFETCH);
       adaptiveCapture = preferences.getBoolean("adaptiveCapture", ReaderDefaults.ADAPTIVE_CAPTURE);
       historyReuse = preferences.getBoolean("historyReuse", ReaderDefaults.HISTORY_REUSE);
-      historyPromote = preferences.getBoolean("historyPromote", ReaderDefaults.HISTORY_PROMOTE);
+      historyHidden = preferences.getBoolean("historyHidden", ReaderDefaults.HISTORY_HIDDEN);
       updatePauseButton();
       updateAutoButton();
     }
@@ -45,6 +45,7 @@ public class AutoFlipTests extends Instrumentation {
     @Override void fetch(int position, int generation) { fetches++; lastFetched=position; }
     @Override void play(java.io.File file, int generation) { if (!waitingForGap) plays++; }
     @Override void setStatus(String text) { message = text; }
+    @Override void turnPage(String completedStatus) { turns++; message=completedStatus; }
   }
   void ui(Runnable action) {
     final Throwable[] error = new Throwable[1];
@@ -74,6 +75,14 @@ public class AutoFlipTests extends Instrumentation {
     }
     return null;
   }
+  Button findButtonDescription(android.view.View view, String description) {
+    if (view instanceof Button && description.contentEquals(view.getContentDescription())) return (Button)view;
+    if (view instanceof android.view.ViewGroup) {
+      android.view.ViewGroup group=(android.view.ViewGroup)view;
+      for (int i=0;i<group.getChildCount();i++) { Button found=findButtonDescription(group.getChildAt(i),description); if(found!=null)return found; }
+    }
+    return null;
+  }
   SeekBar findSeekBar(android.view.View view, String prefix) {
     if (view instanceof SeekBar && view.getContentDescription()!=null
         && view.getContentDescription().toString().startsWith(prefix)) return (SeekBar)view;
@@ -90,6 +99,30 @@ public class AutoFlipTests extends Instrumentation {
       for (int i=0;i<group.getChildCount();i++) { TextView found=findText(group.getChildAt(i),prefix); if (found!=null) return found; }
     }
     return null;
+  }
+  android.view.View findDescription(android.view.View view, String description) {
+    if (view.getContentDescription()!=null && description.contentEquals(view.getContentDescription())) return view;
+    if (view instanceof android.view.ViewGroup) {
+      android.view.ViewGroup group=(android.view.ViewGroup)view;
+      for (int i=0;i<group.getChildCount();i++) { android.view.View found=findDescription(group.getChildAt(i),description); if(found!=null)return found; }
+    }
+    return null;
+  }
+  EditText findEditText(android.view.View view) {
+    if (view instanceof EditText) return (EditText)view;
+    if (view instanceof android.view.ViewGroup) {
+      android.view.ViewGroup group=(android.view.ViewGroup)view;
+      for (int i=0;i<group.getChildCount();i++) { EditText found=findEditText(group.getChildAt(i)); if(found!=null)return found; }
+    }
+    return null;
+  }
+  int directSettingControls(android.view.View view) {
+    int count=(view instanceof Switch || view instanceof SeekBar || view instanceof EditText) ? 1 : 0;
+    if (view instanceof android.view.ViewGroup) {
+      android.view.ViewGroup group=(android.view.ViewGroup)view;
+      for (int i=0;i<group.getChildCount();i++) count+=directSettingControls(group.getChildAt(i));
+    }
+    return count;
   }
   void waitTurn() throws Exception { Thread.sleep(1000); }
   public void onCreate(Bundle args) { super.onCreate(args); start(); }
@@ -108,7 +141,8 @@ public class AutoFlipTests extends Instrumentation {
     boolean hadPrefetch = saved.contains("earlyPrefetch"), originalPrefetch = saved.getBoolean("earlyPrefetch", true);
     boolean hadAdaptive = saved.contains("adaptiveCapture"), originalAdaptive = saved.getBoolean("adaptiveCapture", true);
     boolean hadHistoryReuse = saved.contains("historyReuse"), originalHistoryReuse = saved.getBoolean("historyReuse", ReaderDefaults.HISTORY_REUSE);
-    boolean hadHistoryPromote = saved.contains("historyPromote"), originalHistoryPromote = saved.getBoolean("historyPromote", ReaderDefaults.HISTORY_PROMOTE);
+    boolean hadHistoryHidden = saved.contains("historyHidden"), originalHistoryHidden = saved.getBoolean("historyHidden", ReaderDefaults.HISTORY_HIDDEN);
+    boolean hadHistoryPromote = saved.contains("historyPromote"), originalHistoryPromote = saved.getBoolean("historyPromote", false);
     int outcome = -1;
     try {
       check(TurnService.startX(true,100)<TurnService.endX(true,100) && TurnService.startX(false,100)>TurnService.endX(false,100),"page direction is opposite to finger gesture"); passed++;
@@ -122,6 +156,7 @@ public class AutoFlipTests extends Instrumentation {
           && ReaderService.turnFailureMessage(TurnService.TURN_REJECTED).contains("暂时无法执行"),
           "turn errors distinguish disabled, disconnected, and rejected states"); passed++;
       check("开始播放".equals(ReaderService.consoleMessage("play_start"))
+          && "本页未识别到文字，尝试继续翻页".equals(ReaderService.consoleMessage("no_text_turn"))
           && "翻页后画面未变化，已停止自动翻页".equals(ReaderService.consoleMessage("page_unchanged"))
           && ReaderService.consoleMessage("unknown")==null
           && !ReaderService.consoleMessage("error").contains("generation"),
@@ -147,6 +182,20 @@ public class AutoFlipTests extends Instrumentation {
       fresh(); ui(() -> { service.errorButton.setVisibility(android.view.View.GONE); service.automatic=true; service.stopAfterUnchangedPage(); check(!service.automatic && service.lastError.isEmpty() && service.errorButton.getVisibility()==android.view.View.GONE && "翻页后画面未变化，已停止自动翻页".equals(service.message), "unchanged page is a normal stop without error UI"); }); passed++;
       String complete="语音合成失败：CUDA内存不足，模型返回了完整诊断信息"; String parsed=ReaderService.httpErrorMessage(502,("{\"detail\":\""+complete+"\"}").getBytes(java.nio.charset.StandardCharsets.UTF_8)); fresh(); ui(() -> service.fail("语音失败："+parsed)); check(service.lastError.equals("语音失败：HTTP 502："+complete) && service.errorButton.getVisibility()==android.view.View.VISIBLE,"full speech error remains available in Android"); passed++;
       fresh(); ui(() -> { service.setAutoFlip(false); service.finished(); check("本页朗读完成".equals(service.message), "off finishes current page"); }); passed++;
+      fresh(); ui(() -> {
+        service.errorButton.setVisibility(android.view.View.GONE);
+        service.handleNoText();
+        check(service.turns==1 && "本页未识别到文字".equals(service.message) && service.lastError.isEmpty()
+            && service.errorButton.getVisibility()!=android.view.View.VISIBLE,
+            "empty page with auto flip reuses the normal page completion state machine");
+      }); passed++;
+      fresh(); ui(() -> {
+        service.setAutoFlip(false);
+        service.handleNoText();
+        check(service.turns==0 && !service.running && "本页未识别到文字".equals(service.message)
+            && service.lastError.isEmpty(),
+            "empty page without auto flip stops normally and keeps the current page");
+      }); passed++;
       fresh(); ui(() -> service.afterTurn(service.generation, service.flipGeneration)); waitTurn();
       ui(() -> check(service.captures == 1, "on captures next page once")); passed++;
       check(ReaderService.AUTO_FLIP_CAPTURE_DELAY_MS < 800
@@ -215,8 +264,37 @@ public class AutoFlipTests extends Instrumentation {
       ui(() -> check(service.loads==2 && !service.waitingForGap,"zero gap starts processing and releases immediately")); passed++;
       fresh(); ui(() -> { service.preferences.edit().remove("sentenceGapMs").commit(); check(service.sentenceGapMs()==ReaderDefaults.SENTENCE_GAP_MS,"current gap is the shared default"); service.preferences.edit().putInt("sentenceGapMs",1200).commit(); check(service.sentenceGapMs()==1200,"live preference read"); MockReader restarted=new MockReader(); check(restarted.sentenceGapMs()==1200,"gap persisted"); restarted.workers.shutdownNow(); service.preferences.edit().putInt("sentenceGapMs",99999).commit(); check(service.sentenceGapMs()==3000,"upper clamp"); service.preferences.edit().putInt("sentenceGapMs",-1).commit(); check(service.sentenceGapMs()==0,"lower clamp"); }); passed++;
       saved.edit().putInt("sentenceGapMs",ReaderDefaults.SENTENCE_GAP_MS).commit();
-      saved.edit().putInt("speechSpeedPercent",ReaderDefaults.SPEECH_SPEED_PERCENT).putInt("overlayOpacityPercent",ReaderDefaults.OVERLAY_OPACITY_PERCENT).putBoolean("adaptiveCapture",ReaderDefaults.ADAPTIVE_CAPTURE).putBoolean("historyReuse",ReaderDefaults.HISTORY_REUSE).putBoolean("historyPromote",ReaderDefaults.HISTORY_PROMOTE).commit();
+      saved.edit().putInt("speechSpeedPercent",ReaderDefaults.SPEECH_SPEED_PERCENT).putInt("overlayOpacityPercent",ReaderDefaults.OVERLAY_OPACITY_PERCENT).putBoolean("adaptiveCapture",ReaderDefaults.ADAPTIVE_CAPTURE).putBoolean("historyReuse",ReaderDefaults.HISTORY_REUSE).putBoolean("historyHidden",ReaderDefaults.HISTORY_HIDDEN).putBoolean("historyPromote",true).commit();
       MainActivity activity=(MainActivity)startActivitySync(new android.content.Intent(getTargetContext(),MainActivity.class).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
+      ui(() -> {
+        TextView title=findText(activity.getWindow().getDecorView(),"电脑连接与模型");
+        TextView addressTitle=findText(activity.getWindow().getDecorView(),"电脑服务地址");
+        android.view.View addressRow=findDescription(activity.getWindow().getDecorView(),"设置项 电脑服务地址");
+        check(title.getCurrentTextColor()==MainActivity.SECTION_HEADING_TEXT
+            && title.getBackground()==null && addressRow!=null
+            && addressRow.getHeight()==MainActivity.SETTING_ROW_HEIGHT
+            && addressTitle!=null && activity.addressStatus.getHeight()==56
+            && activity.address.getParent()==null
+            && directSettingControls(activity.getWindow().getDecorView())==0,
+            "settings uses equal two-line rows and keeps direct controls out of the list");
+      }); passed++;
+      ui(() -> findDescription(activity.getWindow().getDecorView(),"设置项 配对口令").performClick());
+      ui(() -> {
+        EditText input=findEditText(activity.activeDialog.getWindow().getDecorView());
+        int variation=input.getInputType() & android.text.InputType.TYPE_MASK_VARIATION;
+        check(activity.token.getText().toString().contentEquals(activity.tokenStatus.getText())
+            && activity.token.getText().toString().contentEquals(input.getText())
+            && variation==android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD,
+            "pairing token is fully visible in both the row and editor");
+        activity.activeDialog.getButton(android.app.AlertDialog.BUTTON_NEGATIVE).performClick();
+      }); passed++;
+      MainActivity.ConnectionVersionState same=MainActivity.connectionVersionState("{\"version\":4}");
+      MainActivity.ConnectionVersionState different=MainActivity.connectionVersionState("{\"version\":3}");
+      MainActivity.ConnectionVersionState missing=MainActivity.connectionVersionState("{\"status\":\"ok\"}");
+      check(same.color==MainActivity.CONNECTED_TEXT && same.text.equals("电脑已连接 · 版本 4")
+          && different.color==MainActivity.WARNING_TEXT && different.text.contains("安卓 4，电脑 3")
+          && missing.color==MainActivity.WARNING_TEXT && missing.text.contains("未报告有效版本"),
+          "pair version states distinguish matching, different, and missing versions without disconnecting"); passed++;
       if (android.os.Build.VERSION.SDK_INT>=34) {
         android.content.Intent capture=activity.screenCaptureIntent();
         android.os.Bundle extras=capture.getExtras();
@@ -229,24 +307,57 @@ public class AutoFlipTests extends Instrumentation {
         check(entireScreen,"Android 14+ projection is fixed to the entire screen"); passed++;
       }
       ui(() -> {
-        Button advanced=findButton(activity.getWindow().getDecorView(),"高级选项");
-        CheckBox vision=(CheckBox)findButton(activity.getWindow().getDecorView(),"OCR 与分镜并行");
+        android.view.View advanced=findDescription(activity.getWindow().getDecorView(),"进入高级选项");
         check(advanced!=null && activity.advancedOptions.getVisibility()==android.view.View.GONE
-            && vision!=null && !vision.isShown(),"advanced settings start collapsed");
+            && findText(activity.getWindow().getDecorView(),"OCR 与分镜并行")==null,
+            "advanced rows stay out of the overview hierarchy");
         advanced.performClick();
         check(activity.advancedOptions.getVisibility()==android.view.View.VISIBLE
-            && "收起高级选项".contentEquals(advanced.getText()),"advanced settings expand as one group");
+            && activity.advancedScroll.isShown()
+            && findButtonDescription(activity.getWindow().getDecorView(),"返回常用设置")!=null
+            && findText(activity.getWindow().getDecorView(),"OCR 与分镜并行")!=null
+            && directSettingControls(activity.getWindow().getDecorView())==0,
+            "advanced settings open as a two-line child screen without direct controls");
+        findButtonDescription(activity.getWindow().getDecorView(),"返回常用设置").performClick();
+        check(activity.advancedOptions.getVisibility()==android.view.View.GONE
+            && activity.mainScroll.isShown(),"advanced settings return to the overview screen");
       }); passed++;
-      ui(() -> { SeekBar bar=findGap(activity.getWindow().getDecorView()); TextView label=findText(activity.getWindow().getDecorView(),"句间停顿："); check(bar!=null && bar.getMax()==30 && bar.getProgress()==1 && label.getCurrentTextColor()==MainActivity.NORMAL_TEXT,"settings slider reflects current default without highlight"); bar.requestFocus(); bar.dispatchKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN,android.view.KeyEvent.KEYCODE_DPAD_RIGHT)); bar.dispatchKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_UP,android.view.KeyEvent.KEYCODE_DPAD_RIGHT)); check(saved.getInt("sentenceGapMs",0)==bar.getProgress()*100 && bar.getProgress()>1 && label.getCurrentTextColor()==MainActivity.CHANGED_TEXT,"changed gap saves immediately and turns blue"); bar.setProgress(1); check(label.getCurrentTextColor()==MainActivity.NORMAL_TEXT,"restoring default clears blue highlight"); }); passed++;
       ui(() -> {
-        SeekBar speed=findSeekBar(activity.getWindow().getDecorView(),"朗读速度：");
-        SeekBar opacity=findSeekBar(activity.getWindow().getDecorView(),"浮窗透明度：");
-        check(speed!=null && speed.getMax()==20 && speed.getProgress()==8,"speed slider exposes current 0.90x default");
-        check(opacity!=null && opacity.getMax()==14 && opacity.getProgress()==13,"opacity slider exposes 30% to 100%");
-        speed.requestFocus(); speed.dispatchKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN,android.view.KeyEvent.KEYCODE_DPAD_RIGHT)); speed.dispatchKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_UP,android.view.KeyEvent.KEYCODE_DPAD_RIGHT));
-        check(saved.getInt("speechSpeedPercent",0)==95,"speed slider saves in five-percent steps");
-        opacity.requestFocus(); opacity.dispatchKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN,android.view.KeyEvent.KEYCODE_DPAD_LEFT)); opacity.dispatchKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_UP,android.view.KeyEvent.KEYCODE_DPAD_LEFT));
-        check(saved.getInt("overlayOpacityPercent",0)==90,"opacity slider saves and is adjustable");
+        check(findGap(activity.getWindow().getDecorView())==null,"gap slider is absent until its row is opened");
+        findDescription(activity.getWindow().getDecorView(),"设置项 句间停顿").performClick();
+      });
+      ui(() -> {
+        SeekBar bar=findGap(activity.activeDialog.getWindow().getDecorView());
+        check(bar!=null && bar.getMax()==30 && bar.getProgress()==1,"gap row opens its slider at the current value");
+        bar.setProgress(2);
+        activity.activeDialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick();
+        check(saved.getInt("sentenceGapMs",0)==200 && "0.2 秒".contentEquals(activity.gapStatus.getText())
+            && activity.gapStatus.getCurrentTextColor()==MainActivity.CHANGED_TEXT,
+            "gap dialog saves and refreshes the status line: value="+saved.getInt("sentenceGapMs",0)
+                +" status="+activity.gapStatus.getText()+" color="+activity.gapStatus.getCurrentTextColor());
+      });
+      ui(() -> findDescription(activity.getWindow().getDecorView(),"设置项 句间停顿").performClick());
+      ui(() -> {
+        findGap(activity.activeDialog.getWindow().getDecorView()).setProgress(1);
+        activity.activeDialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick();
+      }); passed++;
+      ui(() -> findDescription(activity.getWindow().getDecorView(),"设置项 朗读速度").performClick());
+      ui(() -> {
+        SeekBar speed=findSeekBar(activity.activeDialog.getWindow().getDecorView(),"朗读速度 ");
+        check(speed!=null && speed.getMax()==20 && speed.getProgress()==8,"speed row opens the current 0.90x slider");
+        speed.setProgress(9);
+        activity.activeDialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick();
+        check(saved.getInt("speechSpeedPercent",0)==95 && "0.95×".contentEquals(activity.speedStatus.getText()),"speed dialog saves in five-percent steps");
+        findDescription(activity.getWindow().getDecorView(),"进入高级选项").performClick();
+        findDescription(activity.getWindow().getDecorView(),"设置项 浮窗透明度").performClick();
+      });
+      ui(() -> {
+        SeekBar opacity=findSeekBar(activity.activeDialog.getWindow().getDecorView(),"浮窗透明度 ");
+        check(opacity!=null && opacity.getMax()==14 && opacity.getProgress()==13,"opacity row opens the 30% to 100% slider");
+        opacity.setProgress(12);
+        activity.activeDialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick();
+        check(saved.getInt("overlayOpacityPercent",0)==90 && "90%".contentEquals(activity.opacityStatus.getText()),"opacity dialog saves and refreshes its status");
+        findButtonDescription(activity.getWindow().getDecorView(),"返回常用设置").performClick();
       }); passed++;
       fresh(); ui(() -> {
         service.preferences.edit().putInt("speechSpeedPercent",999).putInt("overlayOpacityPercent",20).commit();
@@ -265,41 +376,79 @@ public class AutoFlipTests extends Instrumentation {
         check(service.speechSettingsGeneration==before+1 && !service.audioFiles.containsKey(2)
             && !service.downloading.contains(2),"speed change discards prefetched future audio");
       }); passed++;
-      ui(() -> { Button models=findButton(activity.getWindow().getDecorView(),"选择朗读模型"); check(models!=null && "选择朗读模型".contentEquals(models.getContentDescription()),"settings exposes host model picker"); }); passed++;
+      final String[] originalAddress={null};
       ui(() -> {
-        CheckBox master=(CheckBox)findButton(activity.getWindow().getDecorView(),"全部开启/关闭");
-        CheckBox vision=(CheckBox)findButton(activity.getWindow().getDecorView(),"OCR 与分镜并行");
-        CheckBox eager=(CheckBox)findButton(activity.getWindow().getDecorView(),"首段语音提前生成");
-        CheckBox prefetch=(CheckBox)findButton(activity.getWindow().getDecorView(),"按顺序预取本页全部语音");
-        check(master!=null && vision!=null && eager!=null && prefetch!=null,"optimization switches are visible");
-        master.setChecked(false);
-        check(!vision.isChecked() && !eager.isChecked() && !prefetch.isChecked()
+        originalAddress[0]=activity.address.getText().toString();
+        findDescription(activity.getWindow().getDecorView(),"设置项 电脑服务地址").performClick();
+      });
+      ui(() -> {
+        EditText input=findEditText(activity.activeDialog.getWindow().getDecorView());
+        input.setText("http://10.0.2.2:9999/");
+        activity.activeDialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick();
+        check("http://10.0.2.2:9999".equals(saved.getString("address",""))
+            && "http://10.0.2.2:9999".contentEquals(activity.addressStatus.getText()),
+            "text setting opens an editor, normalizes and refreshes the row");
+        activity.address.setText(originalAddress[0]);
+        check(findDescription(activity.getWindow().getDecorView(),"设置项 朗读模型")!=null
+            && findButton(activity.getWindow().getDecorView(),"选择朗读模型")==null,
+            "model selection is one two-line row without a second button");
+      }); passed++;
+      ui(() -> findDescription(activity.getWindow().getDecorView(),"设置项 读完一页后自动翻页").performClick());
+      ui(() -> {
+        android.widget.ListView choices=activity.activeDialog.getListView();
+        choices.performItemClick(choices.getChildAt(1),1,choices.getItemIdAtPosition(1));
+        activity.activeDialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick();
+        check(!activity.auto.isChecked() && !saved.getBoolean("auto",true)
+            && "已关闭".contentEquals(activity.autoStatus.getText()),
+            "boolean setting changes only through its opened choice dialog");
+        activity.auto.setChecked(ReaderDefaults.AUTO_FLIP);
+      }); passed++;
+      ui(() -> {
+        findDescription(activity.getWindow().getDecorView(),"进入高级选项").performClick();
+        check(findDescription(activity.getWindow().getDecorView(),"设置项 低等待优化总开关")!=null
+            && directSettingControls(activity.getWindow().getDecorView())==0,"optimization settings are two-line rows without switches");
+        activity.lowLatency.setChecked(false);
+        check(!activity.parallelVision.isChecked() && !activity.eagerFirstAudio.isChecked() && !activity.earlyPrefetch.isChecked()
             && !saved.getBoolean("parallelVision",true) && !saved.getBoolean("eagerFirstAudio",true)
             && !saved.getBoolean("earlyPrefetch",true),"master switch disables and persists legacy pipeline");
-        vision.setChecked(true);
-        check(!master.isChecked() && saved.getBoolean("parallelVision",false),"individual optimization persists without forcing others");
-        master.setChecked(true);
-        check(vision.isChecked() && eager.isChecked() && prefetch.isChecked() && master.isChecked(),"master switch enables all Android optimizations");
+        activity.parallelVision.setChecked(true);
+        check(!activity.lowLatency.isChecked() && saved.getBoolean("parallelVision",false),"individual optimization persists without forcing others");
+        activity.lowLatency.setChecked(true);
+        check(activity.parallelVision.isChecked() && activity.eagerFirstAudio.isChecked() && activity.earlyPrefetch.isChecked()
+            && activity.lowLatency.isChecked(),"master switch enables all Android optimizations");
       }); passed++;
       ui(() -> {
-        CheckBox adaptive=(CheckBox)findButton(activity.getWindow().getDecorView(),"翻页后自适应抓帧");
-        check(adaptive!=null && adaptive.isChecked() && adaptive.getCurrentTextColor()==MainActivity.NORMAL_TEXT,
-            "adaptive capture is visible and enabled by default");
-        adaptive.setChecked(false);
-        check(!saved.getBoolean("adaptiveCapture",true) && adaptive.getCurrentTextColor()==MainActivity.CHANGED_TEXT,
-            "adaptive capture can be disabled independently and persists");
-        adaptive.setChecked(true);
+        check(activity.adaptiveCapture.isChecked() && "已开启 · 画面稳定后截图".contentEquals(activity.adaptiveCaptureStatus.getText()),
+            "adaptive capture row exposes the enabled default");
+        activity.adaptiveCapture.setChecked(false);
+        check(!saved.getBoolean("adaptiveCapture",true)
+            && activity.adaptiveCaptureStatus.getCurrentTextColor()==MainActivity.CHANGED_TEXT,
+            "adaptive capture persists and refreshes its status line");
+        activity.adaptiveCapture.setChecked(true);
+      }); passed++;
+      final int[] originalSwipe={0};
+      ui(() -> {
+        originalSwipe[0]=Integer.parseInt(activity.swipeY.getText().toString());
+        findDescription(activity.getWindow().getDecorView(),"设置项 翻页滑动高度").performClick();
+      });
+      ui(() -> {
+        EditText input=findEditText(activity.activeDialog.getWindow().getDecorView());
+        input.setText("60");
+        activity.activeDialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick();
+        check(saved.getInt("swipeY",0)==60 && "60%".contentEquals(activity.swipeYStatus.getText()),
+            "bounded number dialog saves and refreshes the row");
+        activity.swipeY.setText(String.valueOf(originalSwipe[0]));
       }); passed++;
       ui(() -> {
-        CheckBox reuse=(CheckBox)findButton(activity.getWindow().getDecorView(),"匹配历史结果时跳过处理");
-        CheckBox promote=(CheckBox)findButton(activity.getWindow().getDecorView(),"将本次新结果设为后续默认");
-        check(reuse!=null && reuse.isChecked() && promote!=null && !promote.isChecked(),
+        check(activity.historyReuse.isChecked() && !activity.historyHidden.isChecked()
+            && !saved.contains("historyPromote"),
             "history controls expose the speed-first defaults");
-        reuse.setChecked(false); promote.setChecked(true);
-        check(!saved.getBoolean("historyReuse",true) && saved.getBoolean("historyPromote",false),
-            "history reuse and promotion choices persist independently");
+        activity.historyReuse.setChecked(false); activity.historyHidden.setChecked(true);
+        check(!saved.getBoolean("historyReuse",true) && saved.getBoolean("historyHidden",false),
+            "history reuse and hidden choices persist independently");
+        findButtonDescription(activity.getWindow().getDecorView(),"返回常用设置").performClick();
       }); passed++;
-      ui(() -> { check(activity.connectionStatus!=null && activity.connectionStatus.getText().toString().startsWith("●") && activity.connectionStatus.getContentDescription().toString().startsWith("电脑连接状态 ") && findButton(activity.getWindow().getDecorView(),"检测电脑连接")==null,"settings continuously shows connection state without a manual test button"); }); passed++;
+      ui(() -> { check(activity.connectionStatus!=null && !activity.connectionStatus.getText().toString().startsWith("●") && activity.connectionStatus.getContentDescription().toString().startsWith("电脑连接状态 ") && findButton(activity.getWindow().getDecorView(),"检测电脑连接")==null,"connection is a two-line read-only state without a manual test button"); }); passed++;
       ModelPicker picker=new ModelPicker(activity,"http://127.0.0.1", "token", model -> {}); check("可用".equals(picker.stateName("available")) && "未验证".equals(picker.stateName("unverified")) && "文件不完整".equals(picker.stateName("incomplete")) && "加载失败".equals(picker.stateName("failed")),"model states are explicit"); JSONObject leaf=new JSONObject().put("kind","model"); JSONObject single=new JSONObject().put("kind","group").put("children",new JSONArray().put(leaf)); JSONObject nested=new JSONObject().put("kind","group").put("children",new JSONArray().put(new JSONObject().put("kind","model"))); JSONArray branches=new JSONArray().put(single).put(nested); check(picker.singleModelChild(single)==leaf,"single-model folder is flattened"); check(picker.countModels(branches)==2,"folder count includes descendant models"); ui(activity::finish); passed++;
       result.putString("stream", "PASS: " + passed + " Android playback state tests\n");
       result.putInt("passed", passed);
@@ -321,6 +470,7 @@ public class AutoFlipTests extends Instrumentation {
     if (hadPrefetch) restoreOptimizations.putBoolean("earlyPrefetch",originalPrefetch); else restoreOptimizations.remove("earlyPrefetch");
     if (hadAdaptive) restoreOptimizations.putBoolean("adaptiveCapture",originalAdaptive); else restoreOptimizations.remove("adaptiveCapture");
     if (hadHistoryReuse) restoreOptimizations.putBoolean("historyReuse",originalHistoryReuse); else restoreOptimizations.remove("historyReuse");
+    if (hadHistoryHidden) restoreOptimizations.putBoolean("historyHidden",originalHistoryHidden); else restoreOptimizations.remove("historyHidden");
     if (hadHistoryPromote) restoreOptimizations.putBoolean("historyPromote",originalHistoryPromote); else restoreOptimizations.remove("historyPromote");
     restoreOptimizations.commit();
     finish(outcome, result);

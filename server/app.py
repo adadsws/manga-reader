@@ -5,6 +5,7 @@ import io
 import wave
 import hashlib
 import math
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -18,6 +19,7 @@ from .model_catalog import ModelCatalog
 from .history import HistoryStore, compound_key, digest_bytes, digest_json
 
 ROOT = Path(__file__).resolve().parents[1]
+READER_PROTOCOL_VERSION = 4
 settings = json.loads((ROOT / "config/reader.json").read_text(encoding="utf-8"))
 app = FastAPI(title="漫画朗读电脑服务")
 store = PageStore()
@@ -43,6 +45,8 @@ tts_code_signatures = [
 _tts_history_context = None
 warmup_lock = asyncio.Lock()
 warmup_state = {"status": "cold", "seconds": 0.0, "steps": {}}
+pair_version_lock = threading.Lock()
+last_android_version_state = None
 
 
 @app.middleware("http")
@@ -77,7 +81,7 @@ def enabled_header(request, name, default=True):
 def history_options(request):
     return (
         enabled_header(request, "X-Reader-History-Reuse", True),
-        enabled_header(request, "X-Reader-History-Promote", False),
+        enabled_header(request, "X-Reader-History-Hidden", False),
     )
 
 
@@ -156,13 +160,42 @@ def health():
         "layout_backend": getattr(getattr(ocr, "layout", None), "device", "not_loaded"),
         "failure_policy": "strict_no_device_fallback",
     }
-    return {"status": "ok", "voice": settings.get("voice", "hina"), "voice_name": settings.get("voice_name", settings.get("voice", "hina")), "model_version": settings.get("model_version", "v4"), "active_model_id": model_catalog.active_id, "processing": "computer", "version": 3, "warmup_status": warmup_state["status"], "history": {"lookup": "exact_memory", "persistence": "sqlite_wal_async", "writer_errors": len(history.errors)}, "ocr": ocr_status, "asr": asr_status(), "speech_policy": {"normalization": "t2s_skip_english_kana", "max_chunk_characters": None if settings.get("speech_mode") == "native" else 24, "text_split_method": settings.get("text_split_method", "cut2"), "mode": settings.get("speech_mode", "bounded"), "unit": "panel_sentence", "guard": settings.get("speech_guard", "off"), "repetition_penalty": settings.get("repetition_penalty", 1.35), "parallel_infer": settings.get("tts_parallel_infer", False), "batch_size": settings.get("tts_batch_size", 1), "seed": 42}}
+    return {"status": "ok", "voice": settings.get("voice", "hina"), "voice_name": settings.get("voice_name", settings.get("voice", "hina")), "model_version": settings.get("model_version", "v4"), "active_model_id": model_catalog.active_id, "processing": "computer", "version": READER_PROTOCOL_VERSION, "warmup_status": warmup_state["status"], "history": {"lookup": "exact_memory", "persistence": "sqlite_wal_async", "writer_errors": len(history.errors)}, "ocr": ocr_status, "asr": asr_status(), "speech_policy": {"normalization": "t2s_skip_english_kana", "max_chunk_characters": None if settings.get("speech_mode") == "native" else 24, "text_split_method": settings.get("text_split_method", "cut2"), "mode": settings.get("speech_mode", "bounded"), "unit": "panel_sentence", "guard": settings.get("speech_guard", "off"), "repetition_penalty": settings.get("repetition_penalty", 1.35), "parallel_infer": settings.get("tts_parallel_infer", False), "batch_size": settings.get("tts_batch_size", 1), "seed": 42}}
 
 
 @app.get("/pair")
 def pair(request: Request):
     authorize(request)
+    observe_android_version(request.headers.get("X-Reader-Version"))
     return health()
+
+
+def observe_android_version(raw_version):
+    global last_android_version_state
+    android_version = None
+    if raw_version is not None:
+        try:
+            android_version = int(raw_version)
+        except (TypeError, ValueError):
+            pass
+    if android_version is None:
+        state = ("missing", None)
+    elif android_version == READER_PROTOCOL_VERSION:
+        state = ("match", android_version)
+    else:
+        state = ("mismatch", android_version)
+    with pair_version_lock:
+        changed = state != last_android_version_state
+        last_android_version_state = state
+    if changed and state[0] == "missing":
+        event("android_version_missing", computer_version=READER_PROTOCOL_VERSION)
+    elif changed and state[0] == "mismatch":
+        event(
+            "android_version_mismatch",
+            android_version=android_version,
+            computer_version=READER_PROTOCOL_VERSION,
+        )
+    return state[0]
 
 
 def warm_ocr_component():
@@ -264,7 +297,7 @@ async def select_model(request: Request):
 async def page(request: Request):
     global ocr
     authorize(request)
-    reuse_history, promote_history = history_options(request)
+    reuse_history, hide_history = history_options(request)
     parallel = enabled_header(request, "X-Reader-Parallel-Vision", False)
     body = bytearray()
     async for chunk in request.stream():
@@ -305,7 +338,7 @@ async def page(request: Request):
                 history.record_run(input_kind="image", input_sha=input_sha,
                                    match_stage=match_stage, source_version=None,
                                    result_version=None, reuse=reuse_history,
-                                   promote=promote_history, status="failed")
+                                   hidden=hide_history, status="failed")
                 raise HTTPException(422, str(e))
         ocr_key = ocr_structure_key(raw_rows)
         ocr_hit = history.lookup_page("ocr", ocr_key) if reuse_history else None
@@ -328,19 +361,19 @@ async def page(request: Request):
             input_kind="image", input_sha=input_sha, image_key=image_key,
             ocr_key=ocr_key, text_key=text_key, sentences=sentences,
             source_version=source_version, match_stage=match_stage,
-            promote=promote_history, input_body=raw_body,
+            hidden=hide_history, input_body=raw_body,
         )
     if image_hit:
         text_key = reading_text_key(sentences)
     history.record_run(
         input_kind="image", input_sha=input_sha, match_stage=match_stage,
         source_version=source_version, result_version=result_version,
-        reuse=reuse_history, promote=promote_history,
+        reuse=reuse_history, hidden=hide_history,
     )
     key = store.add(
         sentences,
         history_reuse=reuse_history,
-        history_promote=promote_history,
+        history_hidden=hide_history,
         history_version_id=result_version,
         history_match_stage=match_stage,
         history_text_key=text_key,
@@ -374,7 +407,7 @@ async def page(request: Request):
 @app.post("/pages/text")
 async def corrected_page(request: Request):
     authorize(request)
-    reuse_history, promote_history = history_options(request)
+    reuse_history, hide_history = history_options(request)
     body = bytearray()
     async for chunk in request.stream():
         body.extend(chunk)
@@ -408,15 +441,15 @@ async def corrected_page(request: Request):
     version_id = history.register_page(
         input_kind="text", input_sha=input_sha, image_key=None, ocr_key=None,
         text_key=text_key, sentences=sentences, source_version=source_version,
-        match_stage=match_stage, promote=promote_history, input_body=input_body,
+        match_stage=match_stage, hidden=hide_history, input_body=input_body,
     )
     history.record_run(
         input_kind="text", input_sha=input_sha, match_stage=match_stage,
         source_version=source_version, result_version=version_id,
-        reuse=reuse_history, promote=promote_history,
+        reuse=reuse_history, hidden=hide_history,
     )
     key = store.add(
-        sentences, history_reuse=reuse_history, history_promote=promote_history,
+        sentences, history_reuse=reuse_history, history_hidden=hide_history,
         history_version_id=version_id, history_match_stage=match_stage,
         history_text_key=text_key,
     )
@@ -668,7 +701,7 @@ async def ensure_audio(key, index, asr_check, speed_factor, source="request", pr
                 audio_version = history.register_audio(
                     history_audio_key, p["audio"][index], trace,
                     source_page_version=p.get("history_version_id"),
-                    promote=p.get("history_promote", False),
+                    hidden=p.get("history_hidden", False),
                 )
                 p.setdefault("audio_history_versions", {})[index] = audio_version
             except Exception as e:

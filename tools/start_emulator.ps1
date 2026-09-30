@@ -42,6 +42,78 @@ function Resume-ReaderConsole {
         }
     }
 }
+function Set-ReaderEmulatorWindowVisible {
+    if (!('ReaderEmulatorWindow' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class ReaderEmulatorWindow {
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential)] public struct MONITORINFO {
+        public int cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+    }
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out RECT rect);
+    [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr window, uint flags);
+    [DllImport("user32.dll")] public static extern bool GetMonitorInfo(IntPtr monitor, ref MONITORINFO info);
+    [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr window, int x, int y, int width, int height, bool repaint);
+}
+'@
+    }
+    $taskDeadline=[DateTime]::UtcNow.AddSeconds(15)
+    do {
+        $taskQemu=Get-CimInstance Win32_Process | Where-Object {
+            $_.Name -eq 'qemu-system-x86_64.exe' -and $_.ExecutablePath -and
+            $_.ExecutablePath.StartsWith($taskSdk+'\',[StringComparison]::OrdinalIgnoreCase) -and
+            $_.CommandLine -match '-avd\s+ReaderAosp35\b' -and $_.CommandLine -match '-port\s+5554\b'
+        } | Select-Object -First 1
+        if ($taskQemu) {
+            $taskWindow=Get-Process -Id $taskQemu.ProcessId -ErrorAction SilentlyContinue
+            if ($taskWindow -and $taskWindow.MainWindowHandle -ne 0) {
+                $taskRect=New-Object ReaderEmulatorWindow+RECT
+                $taskInfo=New-Object ReaderEmulatorWindow+MONITORINFO
+                $taskInfo.cbSize=[Runtime.InteropServices.Marshal]::SizeOf($taskInfo)
+                $taskHandle=$taskWindow.MainWindowHandle
+                $taskMonitor=[ReaderEmulatorWindow]::MonitorFromWindow($taskHandle,2)
+                if (![ReaderEmulatorWindow]::GetWindowRect($taskHandle,[ref]$taskRect) -or
+                    ![ReaderEmulatorWindow]::GetMonitorInfo($taskMonitor,[ref]$taskInfo)) {
+                    throw '无法读取模拟器窗口或显示器工作区。'
+                }
+                $taskWidth=$taskRect.Right-$taskRect.Left
+                $taskHeight=$taskRect.Bottom-$taskRect.Top
+                $taskOriginalWidth=$taskWidth
+                $taskOriginalHeight=$taskHeight
+                $taskAvailableWidth=[Math]::Max(320,$taskInfo.rcWork.Right-$taskInfo.rcWork.Left-40)
+                $taskAvailableHeight=[Math]::Max(480,$taskInfo.rcWork.Bottom-$taskInfo.rcWork.Top-40)
+                $taskScale=[Math]::Min(1.0,[Math]::Min($taskAvailableWidth/$taskWidth,$taskAvailableHeight/$taskHeight))
+                if ($taskScale -lt 1.0) {
+                    $taskWidth=[Math]::Floor($taskWidth*$taskScale)
+                    $taskHeight=[Math]::Floor($taskHeight*$taskScale)
+                }
+                $taskMinX=$taskInfo.rcWork.Left+20
+                $taskMinY=$taskInfo.rcWork.Top+20
+                $taskMaxX=$taskInfo.rcWork.Right-$taskWidth-20
+                $taskMaxY=$taskInfo.rcWork.Bottom-$taskHeight-20
+                if ($taskMaxX -lt $taskMinX) {$taskMinX=$taskInfo.rcWork.Left;$taskMaxX=$taskMinX}
+                if ($taskMaxY -lt $taskMinY) {$taskMinY=$taskInfo.rcWork.Top;$taskMaxY=$taskMinY}
+                $taskX=[Math]::Max($taskMinX,[Math]::Min($taskRect.Left,$taskMaxX))
+                $taskY=[Math]::Max($taskMinY,[Math]::Min($taskRect.Top,$taskMaxY))
+                if ($taskX -ne $taskRect.Left -or $taskY -ne $taskRect.Top -or
+                    $taskWidth -ne $taskOriginalWidth -or $taskHeight -ne $taskOriginalHeight) {
+                    if (![ReaderEmulatorWindow]::MoveWindow($taskHandle,$taskX,$taskY,$taskWidth,$taskHeight,$true)) {
+                        throw '模拟器窗口移动失败。'
+                    }
+                    Write-Host "模拟器窗口已适配当前显示器工作区：($taskX, $taskY)，$taskWidth x $taskHeight。"
+                } else {Write-Host '模拟器窗口已完整位于当前显示器工作区。'}
+                return
+            }
+        }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $taskDeadline)
+    throw '模拟器已启动，但未找到可定位的窗口。'
+}
 $taskDevices=Get-ReaderDevices
 if ($taskDevices -match 'emulator-5554\s') {
     Assert-ReaderAvd
@@ -87,6 +159,7 @@ for ($i=0;$i -lt 120;$i++) {
 }
 if (!$taskBooted) {throw '模拟器启动超时，请查看 emulator.exe 控制台。'}
 Assert-ReaderAvd
+Set-ReaderEmulatorWindowVisible
 $taskApi=(& $taskAdb -s emulator-5554 shell getprop ro.build.version.sdk | Out-String).Trim()
 Write-Host "设备已就绪：ReaderAosp35 · Android API $taskApi · emulator-5554"
 Write-Host '正在安装/更新 reader.apk（保留原设置）…'

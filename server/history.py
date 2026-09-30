@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def canonical_json(value):
@@ -51,6 +51,7 @@ class HistoryStore:
         self.page_indexes = {"image": {}, "ocr": {}, "text": {}}
         self.audio_index = {}
         self.errors = []
+        self.last_created = 0.0
         self.jobs = queue.Queue(maxsize=256)
         self.closed = False
         self._prepare()
@@ -87,7 +88,8 @@ class HistoryStore:
                   id TEXT PRIMARY KEY, created REAL NOT NULL, input_kind TEXT NOT NULL,
                   input_sha TEXT, image_key TEXT, ocr_key TEXT, text_key TEXT,
                   sentences_sha TEXT NOT NULL, source_version TEXT, match_stage TEXT NOT NULL,
-                  promote INTEGER NOT NULL, status TEXT NOT NULL
+                  promote INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL,
+                  hidden INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS active_pages(
                   stage TEXT NOT NULL, stage_key TEXT NOT NULL, version_id TEXT NOT NULL,
@@ -97,7 +99,8 @@ class HistoryStore:
                 CREATE TABLE IF NOT EXISTS audio_versions(
                   id TEXT PRIMARY KEY, created REAL NOT NULL, audio_key TEXT NOT NULL,
                   audio_sha TEXT NOT NULL, audit_sha TEXT NOT NULL,
-                  source_page_version TEXT, promote INTEGER NOT NULL, status TEXT NOT NULL
+                  source_page_version TEXT, promote INTEGER NOT NULL DEFAULT 0,
+                  status TEXT NOT NULL, hidden INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS active_audio(
                   audio_key TEXT PRIMARY KEY, version_id TEXT NOT NULL,
@@ -106,14 +109,27 @@ class HistoryStore:
                 CREATE TABLE IF NOT EXISTS runs(
                   id TEXT PRIMARY KEY, created REAL NOT NULL, input_kind TEXT NOT NULL,
                   input_sha TEXT, match_stage TEXT NOT NULL, source_version TEXT,
-                  result_version TEXT, reuse INTEGER NOT NULL, promote INTEGER NOT NULL,
-                  status TEXT NOT NULL
+                  result_version TEXT, reuse INTEGER NOT NULL,
+                  promote INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL,
+                  hidden INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS page_created_idx ON page_versions(created DESC);
                 CREATE INDEX IF NOT EXISTS audio_created_idx ON audio_versions(created DESC);
                 CREATE INDEX IF NOT EXISTS run_created_idx ON runs(created DESC);
                 """
             )
+            current_version = db.execute("PRAGMA user_version").fetchone()[0]
+            if current_version > SCHEMA_VERSION:
+                raise ValueError("历史数据库版本高于当前程序支持版本")
+            for table in ("page_versions", "audio_versions", "runs"):
+                columns = {
+                    row[1] for row in db.execute(f"PRAGMA table_info({table})").fetchall()
+                }
+                if "hidden" not in columns:
+                    db.execute(
+                        f"ALTER TABLE {table} ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0"
+                    )
+            db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     def _blob_path(self, kind, sha, suffix):
         return self.blobs / kind / sha[:2] / (sha + suffix)
@@ -139,12 +155,17 @@ class HistoryStore:
         if not self.db_path.is_file():
             return
         with self._database() as db:
+            for table in ("page_versions", "audio_versions", "runs"):
+                latest = db.execute(f"SELECT MAX(created) FROM {table}").fetchone()[0]
+                if latest is not None:
+                    self.last_created = max(self.last_created, float(latest))
             rows = db.execute(
-                """SELECT a.stage,a.stage_key,p.id,p.sentences_sha
-                   FROM active_pages a JOIN page_versions p ON p.id=a.version_id
-                   WHERE p.status='complete'"""
+                """SELECT id,sentences_sha,image_key,ocr_key,text_key
+                   FROM page_versions
+                   WHERE status='complete' AND hidden=0
+                   ORDER BY created ASC,id ASC"""
             ).fetchall()
-            for stage, stage_key, version_id, sentences_sha in rows:
+            for version_id, sentences_sha, image_key, ocr_key, text_key in rows:
                 try:
                     sentences = self._read_json_blob(sentences_sha)
                 except Exception as exc:
@@ -152,14 +173,19 @@ class HistoryStore:
                     continue
                 if not sentences:
                     continue
-                self.page_indexes.setdefault(stage, {})[stage_key] = {
-                    "version_id": version_id,
-                    "sentences": sentences,
-                }
+                for stage, stage_key in (
+                    ("image", image_key), ("ocr", ocr_key), ("text", text_key)
+                ):
+                    if stage_key:
+                        self.page_indexes[stage][stage_key] = {
+                            "version_id": version_id,
+                            "sentences": sentences,
+                        }
             rows = db.execute(
-                """SELECT a.audio_key,v.id,v.audio_sha,v.audit_sha
-                   FROM active_audio a JOIN audio_versions v ON v.id=a.version_id
-                   WHERE v.status='complete'"""
+                """SELECT audio_key,id,audio_sha,audit_sha
+                   FROM audio_versions
+                   WHERE status='complete' AND hidden=0
+                   ORDER BY created ASC,id ASC"""
             ).fetchall()
             for audio_key, version_id, audio_sha, audit_sha in rows:
                 audio_path = self._blob_path("audio", audio_sha, ".wav")
@@ -170,6 +196,15 @@ class HistoryStore:
                         "audio_sha": audio_sha,
                         "audit_sha": audit_sha,
                     }
+
+    def _created_at(self):
+        # Windows 的墙钟在快速连续调用时可能返回同一值；单调微增保证“最新”确定。
+        with self.lock:
+            current = time.time()
+            if current <= self.last_created:
+                current = self.last_created + 0.000001
+            self.last_created = current
+            return current
 
     def lookup_page(self, stage, stage_key):
         with self.lock:
@@ -207,28 +242,28 @@ class HistoryStore:
         with self.lock:
             return audio_key in self.audio_index
 
-    def _activate_page(self, record):
-        activated = []
-        if not record["sentences"]:
-            return activated
+    def _index_page(self, record):
+        indexed = []
+        if record["hidden"] or not record["sentences"]:
+            return indexed
         for stage in ("image", "ocr", "text"):
             stage_key = record.get(stage + "_key")
             if not stage_key:
                 continue
             index = self.page_indexes[stage]
-            if stage_key not in index or record["promote"]:
-                index[stage_key] = {
-                    "version_id": record["id"], "sentences": record["sentences"]
-                }
-                activated.append((stage, stage_key))
-        return activated
+            previous = index.get(stage_key)
+            index[stage_key] = {
+                "version_id": record["id"], "sentences": record["sentences"]
+            }
+            indexed.append((stage, stage_key, previous))
+        return indexed
 
     def register_page(self, *, input_kind, input_sha, image_key, ocr_key, text_key,
-                      sentences, source_version=None, match_stage="none", promote=False,
+                      sentences, source_version=None, match_stage="none", hidden=False,
                       input_body=None):
         record = {
             "id": uuid.uuid4().hex,
-            "created": time.time(),
+            "created": self._created_at(),
             "input_kind": input_kind,
             "input_sha": input_sha,
             "image_key": image_key,
@@ -237,37 +272,39 @@ class HistoryStore:
             "sentences": sentences,
             "source_version": source_version,
             "match_stage": match_stage,
-            "promote": bool(promote),
+            "hidden": bool(hidden),
             "input_body": bytes(input_body) if input_body is not None else None,
         }
         with self.lock:
-            record["activated"] = self._activate_page(record)
+            record["indexed"] = self._index_page(record)
         self._submit("page", record)
         return record["id"]
 
     def record_run(self, *, input_kind, input_sha, match_stage, source_version,
-                   result_version, reuse, promote, status="complete"):
+                   result_version, reuse, hidden, status="complete"):
         self._submit("run", {
-            "id": uuid.uuid4().hex, "created": time.time(), "input_kind": input_kind,
+            "id": uuid.uuid4().hex, "created": self._created_at(), "input_kind": input_kind,
             "input_sha": input_sha, "match_stage": match_stage,
             "source_version": source_version, "result_version": result_version,
-            "reuse": bool(reuse), "promote": bool(promote), "status": status,
+            "reuse": bool(reuse), "hidden": bool(hidden), "status": status,
         })
 
-    def register_audio(self, audio_key, body, audit, source_page_version=None, promote=False):
+    def register_audio(self, audio_key, body, audit, source_page_version=None, hidden=False):
         record = {
-            "id": uuid.uuid4().hex, "created": time.time(), "audio_key": audio_key,
+            "id": uuid.uuid4().hex, "created": self._created_at(), "audio_key": audio_key,
             "body": bytes(body), "audit": audit,
-            "source_page_version": source_page_version, "promote": bool(promote),
+            "source_page_version": source_page_version, "hidden": bool(hidden),
         }
         with self.lock:
-            if audio_key not in self.audio_index or promote:
+            if not hidden:
+                previous = self.audio_index.get(audio_key)
                 self.audio_index[audio_key] = {
                     "version_id": record["id"], "body": record["body"], "audit": record["audit"]
                 }
-                record["activated"] = True
+                record["indexed"] = True
+                record["previous"] = previous
             else:
-                record["activated"] = False
+                record["indexed"] = False
         self._submit("audio", record)
         return record["id"]
 
@@ -306,14 +343,20 @@ class HistoryStore:
     def _drop_failed(self, kind, record):
         with self.lock:
             if kind == "page":
-                for stage, stage_key in record.get("activated", []):
+                for stage, stage_key, previous in record.get("indexed", []):
                     current = self.page_indexes.get(stage, {}).get(stage_key)
                     if current and current.get("version_id") == record["id"]:
-                        self.page_indexes[stage].pop(stage_key, None)
+                        if previous is None:
+                            self.page_indexes[stage].pop(stage_key, None)
+                        else:
+                            self.page_indexes[stage][stage_key] = previous
             elif kind == "audio":
                 current = self.audio_index.get(record["audio_key"])
                 if current and current.get("version_id") == record["id"]:
-                    self.audio_index.pop(record["audio_key"], None)
+                    if record.get("previous") is None:
+                        self.audio_index.pop(record["audio_key"], None)
+                    else:
+                        self.audio_index[record["audio_key"]] = record["previous"]
 
     def _persist_page(self, record):
         json_body = canonical_json(record["sentences"]).encode("utf-8")
@@ -324,13 +367,16 @@ class HistoryStore:
             self._write_blob("input", record["input_sha"], suffix, record["input_body"])
         with self._database() as db:
             db.execute(
-                """INSERT INTO page_versions VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                """INSERT INTO page_versions(
+                     id,created,input_kind,input_sha,image_key,ocr_key,text_key,
+                     sentences_sha,source_version,match_stage,promote,status,hidden
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (record["id"], record["created"], record["input_kind"], record["input_sha"],
                  record["image_key"], record["ocr_key"], record["text_key"], sentences_sha,
-                 record["source_version"], record["match_stage"], int(record["promote"]),
-                 "complete"),
+                 record["source_version"], record["match_stage"], 0, "complete",
+                 int(record["hidden"])),
             )
-            for stage, stage_key in record["activated"]:
+            for stage, stage_key, _previous in record["indexed"]:
                 db.execute(
                     """INSERT INTO active_pages(stage,stage_key,version_id) VALUES(?,?,?)
                        ON CONFLICT(stage,stage_key) DO UPDATE SET version_id=excluded.version_id""",
@@ -345,11 +391,15 @@ class HistoryStore:
         self._write_blob("json", audit_sha, ".json", audit_body)
         with self._database() as db:
             db.execute(
-                "INSERT INTO audio_versions VALUES(?,?,?,?,?,?,?,?)",
+                """INSERT INTO audio_versions(
+                     id,created,audio_key,audio_sha,audit_sha,source_page_version,
+                     promote,status,hidden
+                   ) VALUES(?,?,?,?,?,?,?,?,?)""",
                 (record["id"], record["created"], record["audio_key"], audio_sha,
-                 audit_sha, record["source_page_version"], int(record["promote"]), "complete"),
+                 audit_sha, record["source_page_version"], 0, "complete",
+                 int(record["hidden"])),
             )
-            if record["activated"]:
+            if record["indexed"]:
                 db.execute(
                     """INSERT INTO active_audio(audio_key,version_id) VALUES(?,?)
                        ON CONFLICT(audio_key) DO UPDATE SET version_id=excluded.version_id""",
@@ -365,10 +415,13 @@ class HistoryStore:
     def _persist_run(self, record):
         with self._database() as db:
             db.execute(
-                "INSERT INTO runs VALUES(?,?,?,?,?,?,?,?,?,?)",
+                """INSERT INTO runs(
+                     id,created,input_kind,input_sha,match_stage,source_version,
+                     result_version,reuse,promote,status,hidden
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                 (record["id"], record["created"], record["input_kind"], record["input_sha"],
                  record["match_stage"], record["source_version"], record["result_version"],
-                 int(record["reuse"]), int(record["promote"]), record["status"]),
+                 int(record["reuse"]), 0, record["status"], int(record["hidden"])),
             )
 
     def list_versions(self, limit=50):
@@ -377,13 +430,20 @@ class HistoryStore:
         with self._database() as db:
             db.row_factory = sqlite3.Row
             pages = [dict(row) for row in db.execute(
-                """SELECT id,created,input_kind,input_sha,source_version,match_stage,promote,status
+                """SELECT id,created,input_kind,input_sha,source_version,match_stage,hidden,status
                    FROM page_versions ORDER BY created DESC LIMIT ?""", (limit,)
+            )]
+            audio = [dict(row) for row in db.execute(
+                """SELECT id,created,audio_key,source_page_version,hidden,status
+                   FROM audio_versions ORDER BY created DESC LIMIT ?""", (limit,)
             )]
             runs = [dict(row) for row in db.execute(
                 "SELECT * FROM runs ORDER BY created DESC LIMIT ?", (limit,)
             )]
-        return {"pages": pages, "runs": runs, "writer_errors": list(self.errors)}
+        return {
+            "pages": pages, "audio": audio, "runs": runs,
+            "writer_errors": list(self.errors),
+        }
 
     def flush(self):
         self.jobs.join()

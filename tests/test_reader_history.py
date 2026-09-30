@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -7,7 +8,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from server.history import HistoryStore, compound_key, digest_bytes
+from server.history import HistoryStore, canonical_json, compound_key, digest_bytes
 from server.app import app, ensure_audio, settings, store
 
 
@@ -15,30 +16,36 @@ class HistoryStoreTests(unittest.TestCase):
     def make_store(self, root):
         return HistoryStore(Path(root) / "history")
 
-    def test_versions_are_immutable_and_promote_only_moves_active_pointer(self):
+    def test_latest_visible_version_wins_and_hidden_version_is_retained(self):
         with tempfile.TemporaryDirectory() as temp:
             history = self.make_store(temp)
             try:
                 first = history.register_page(
                     input_kind="image", input_sha="input", image_key="same",
                     ocr_key="ocr", text_key="text", sentences=[{"text": "第一版"}],
-                    promote=False, input_body=b"image",
+                    hidden=False, input_body=b"image",
                 )
                 second = history.register_page(
                     input_kind="image", input_sha="input", image_key="same",
                     ocr_key="ocr", text_key="text", sentences=[{"text": "第二版"}],
-                    promote=False, input_body=b"image",
+                    hidden=False, input_body=b"image",
                 )
-                self.assertEqual(history.lookup_page("image", "same")["version_id"], first)
+                for stage, key in (("image", "same"), ("ocr", "ocr"), ("text", "text")):
+                    self.assertEqual(history.lookup_page(stage, key)["version_id"], second)
                 third = history.register_page(
                     input_kind="image", input_sha="input", image_key="same",
                     ocr_key="ocr", text_key="text", sentences=[{"text": "第三版"}],
-                    promote=True, input_body=b"image",
+                    hidden=True, input_body=b"image",
                 )
-                self.assertEqual(history.lookup_page("image", "same")["version_id"], third)
+                for stage, key in (("image", "same"), ("ocr", "ocr"), ("text", "text")):
+                    self.assertEqual(history.lookup_page(stage, key)["version_id"], second)
                 history.flush()
                 versions = history.list_versions()["pages"]
                 self.assertEqual({row["id"] for row in versions}, {first, second, third})
+                self.assertEqual(
+                    {row["id"]: row["hidden"] for row in versions},
+                    {first: 0, second: 0, third: 1},
+                )
             finally:
                 history.close()
 
@@ -51,20 +58,37 @@ class HistoryStoreTests(unittest.TestCase):
                 ocr_key="ocr", text_key="text", sentences=[{"text": "内容"}],
                 input_body=b"same",
             )
-            history.register_page(
-                input_kind="image", input_sha=digest_bytes(b"same"), image_key="candidate",
-                ocr_key="candidate-ocr", text_key="candidate-text",
+            latest = history.register_page(
+                input_kind="image", input_sha=digest_bytes(b"same"), image_key="image",
+                ocr_key="ocr", text_key="text",
                 sentences=[{"text": "内容"}], input_body=b"same",
             )
             history.close()
             reopened = HistoryStore(root)
             try:
-                self.assertEqual(reopened.lookup_page("image", "image")["version_id"], version)
+                self.assertNotEqual(latest, version)
+                self.assertEqual(reopened.lookup_page("image", "image")["version_id"], latest)
                 self.assertEqual(reopened.lookup_page("image", "image")["sentences"][0]["text"], "内容")
                 self.assertEqual(len(list((root / "blobs/input").rglob("*.jpg"))), 1)
                 self.assertEqual(len(list((root / "blobs/json").rglob("*.json"))), 1)
             finally:
                 reopened.close()
+
+    def test_all_hidden_page_versions_are_history_misses(self):
+        with tempfile.TemporaryDirectory() as temp:
+            history = self.make_store(temp)
+            try:
+                version = history.register_page(
+                    input_kind="image", input_sha="input", image_key="same",
+                    ocr_key="ocr", text_key="text", sentences=[{"text": "仅留档"}],
+                    hidden=True, input_body=b"image",
+                )
+                self.assertIsNone(history.lookup_page("image", "same"))
+                history.flush()
+                self.assertEqual(history.list_versions()["pages"][0]["id"], version)
+                self.assertEqual(history.list_versions()["pages"][0]["hidden"], 1)
+            finally:
+                history.close()
 
     def test_audio_is_exactly_keyed_and_corruption_falls_back(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -81,6 +105,66 @@ class HistoryStoreTests(unittest.TestCase):
                 self.assertTrue(history.errors)
                 self.assertIsNone(history.lookup_audio("different"))
                 self.assertTrue(version)
+            finally:
+                history.close()
+
+    def test_latest_visible_audio_wins_and_hidden_audio_survives_restart(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "history"
+            history = HistoryStore(root)
+            key = compound_key("文字", "模型", 0.9, True)
+            first = history.register_audio(key, b"RIFF-first", [{"version": 1}])
+            second = history.register_audio(key, b"RIFF-second", [{"version": 2}])
+            hidden = history.register_audio(
+                key, b"RIFF-hidden", [{"version": 3}], hidden=True
+            )
+            self.assertEqual(history.lookup_audio(key)["version_id"], second)
+            history.close()
+            reopened = HistoryStore(root)
+            try:
+                self.assertEqual(reopened.lookup_audio(key)["version_id"], second)
+                versions = reopened.list_versions()["audio"]
+                self.assertEqual(
+                    {row["id"]: row["hidden"] for row in versions},
+                    {first: 0, second: 0, hidden: 1},
+                )
+            finally:
+                reopened.close()
+
+    def test_v1_database_migrates_existing_records_as_visible(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "history"
+            root.mkdir(parents=True)
+            sentences = [{"text": "旧记录"}]
+            body = canonical_json(sentences).encode("utf-8")
+            sentences_sha = digest_bytes(body)
+            blob = root / "blobs" / "json" / sentences_sha[:2] / (sentences_sha + ".json")
+            blob.parent.mkdir(parents=True)
+            blob.write_bytes(body)
+            db = sqlite3.connect(root / "history.sqlite3")
+            db.execute(
+                """CREATE TABLE page_versions(
+                   id TEXT PRIMARY KEY, created REAL NOT NULL, input_kind TEXT NOT NULL,
+                   input_sha TEXT, image_key TEXT, ocr_key TEXT, text_key TEXT,
+                   sentences_sha TEXT NOT NULL, source_version TEXT, match_stage TEXT NOT NULL,
+                   promote INTEGER NOT NULL, status TEXT NOT NULL)"""
+            )
+            db.execute(
+                "INSERT INTO page_versions VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("legacy", 1.0, "image", "input", "same", "ocr", "text",
+                 sentences_sha, None, "none", 0, "complete"),
+            )
+            db.commit()
+            db.close()
+            history = HistoryStore(root)
+            try:
+                self.assertEqual(history.lookup_page("image", "same")["version_id"], "legacy")
+                self.assertEqual(history.list_versions()["pages"][0]["hidden"], 0)
+                migrated = sqlite3.connect(root / "history.sqlite3")
+                try:
+                    self.assertEqual(migrated.execute("PRAGMA user_version").fetchone()[0], 2)
+                finally:
+                    migrated.close()
             finally:
                 history.close()
 
@@ -137,7 +221,7 @@ class HistoryApiTests(unittest.TestCase):
             fake.box = [40, 40, 80, 80]
             self.assertEqual(self.client.post("/pages", headers=headers, content=b"three").json()["match_stage"], "text")
 
-    def test_reuse_off_reprocesses_and_promote_controls_future_default(self):
+    def test_reuse_off_saves_latest_visible_while_hidden_result_is_skipped(self):
         class OCR:
             last_timings = {}
             def __init__(self): self.calls = 0
@@ -148,18 +232,22 @@ class HistoryApiTests(unittest.TestCase):
                 return [row]
         fake = OCR()
         base = {**self.auth, "X-Reader-Parallel-Vision": "off"}
-        forced = {**base, "X-Reader-History-Reuse": "off"}
-        promoted = {**forced, "X-Reader-History-Promote": "on"}
+        forced = {
+            **base, "X-Reader-History-Reuse": "off",
+            "X-Reader-History-Promote": "on",
+        }
+        hidden = {**forced, "X-Reader-History-Hidden": "on"}
         with patch("server.app.ocr", fake):
             first = self.client.post("/pages", headers=base, content=b"same").json()
-            candidate = self.client.post("/pages", headers=forced, content=b"same").json()
-            old = self.client.post("/pages", headers=base, content=b"same").json()
-            promoted_result = self.client.post("/pages", headers=promoted, content=b"same").json()
-            new = self.client.post("/pages", headers=base, content=b"same").json()
-        self.assertEqual(candidate["match_stage"], "disabled")
-        self.assertEqual(old["sentences"], first["sentences"])
-        self.assertNotEqual(promoted_result["sentences"], first["sentences"])
-        self.assertEqual(new["sentences"], promoted_result["sentences"])
+            latest = self.client.post("/pages", headers=forced, content=b"same").json()
+            reused_latest = self.client.post("/pages", headers=base, content=b"same").json()
+            hidden_result = self.client.post("/pages", headers=hidden, content=b"same").json()
+            after_hidden = self.client.post("/pages", headers=base, content=b"same").json()
+        self.assertEqual(latest["match_stage"], "disabled")
+        self.assertNotEqual(latest["sentences"], first["sentences"])
+        self.assertEqual(reused_latest["sentences"], latest["sentences"])
+        self.assertNotEqual(hidden_result["sentences"], latest["sentences"])
+        self.assertEqual(after_hidden["sentences"], latest["sentences"])
         self.assertEqual(fake.calls, 3)
 
     def test_reading_text_hit_reuses_saved_audio(self):
@@ -178,8 +266,8 @@ class HistoryApiTests(unittest.TestCase):
 
     def test_concurrent_pages_with_same_text_synthesize_only_once(self):
         sentence = [{"text": "并发复用台词。", "speaker_id": "hina"}]
-        first = store.add(sentence, history_reuse=True, history_promote=False)
-        second = store.add(sentence, history_reuse=True, history_promote=False)
+        first = store.add(sentence, history_reuse=True, history_hidden=False)
+        second = store.add(sentence, history_reuse=True, history_hidden=False)
 
         def slow_synthesize(*args, **kwargs):
             time.sleep(0.1)
@@ -209,9 +297,9 @@ class HistoryApiTests(unittest.TestCase):
         with patch("server.app.synthesize", side_effect=(b"RIFF-a", b"RIFF-b", b"RIFF-c")) as synth:
             outputs = []
             for asr_check, speed in ((False, 1.0), (False, 1.2), (True, 1.0)):
-                page_id = store.add(sentence, history_reuse=True, history_promote=False)
+                page_id = store.add(sentence, history_reuse=True, history_hidden=False)
                 outputs.append(asyncio.run(generate(page_id, asr_check, speed)))
-            repeated = store.add(sentence, history_reuse=True, history_promote=False)
+            repeated = store.add(sentence, history_reuse=True, history_hidden=False)
             outputs.append(asyncio.run(generate(repeated, False, 1.0)))
         self.assertEqual(outputs, [b"RIFF-a", b"RIFF-b", b"RIFF-c", b"RIFF-a"])
         self.assertEqual(synth.call_count, 3)

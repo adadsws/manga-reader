@@ -59,7 +59,7 @@ public class ReaderService extends Service {
   final ConcurrentHashMap<Integer, File> audioFiles = new ConcurrentHashMap<>();
   final java.util.Set<HttpURLConnection> activeConnections = ConcurrentHashMap.newKeySet();
   final java.util.Set<Integer> downloading = ConcurrentHashMap.newKeySet();
-  boolean autoFlip, left, asrCheck, parallelVision, eagerFirstAudio, earlyPrefetch, adaptiveCapture, historyReuse, historyPromote, resumeCapture = false;
+  boolean autoFlip, left, asrCheck, parallelVision, eagerFirstAudio, earlyPrefetch, adaptiveCapture, historyReuse, historyHidden, resumeCapture = false;
 
   public IBinder onBind(Intent i) {
     return null;
@@ -96,7 +96,7 @@ public class ReaderService extends Service {
     earlyPrefetch = p.getBoolean("earlyPrefetch", ReaderDefaults.EARLY_PREFETCH);
     adaptiveCapture = p.getBoolean("adaptiveCapture", ReaderDefaults.ADAPTIVE_CAPTURE);
     historyReuse = p.getBoolean("historyReuse", ReaderDefaults.HISTORY_REUSE);
-    historyPromote = p.getBoolean("historyPromote", ReaderDefaults.HISTORY_PROMOTE);
+    historyHidden = p.getBoolean("historyHidden", ReaderDefaults.HISTORY_HIDDEN);
     wm = (WindowManager) getSystemService(WINDOW_SERVICE);
     DisplayMetrics m = new DisplayMetrics();
     wm.getDefaultDisplay().getRealMetrics(m);
@@ -136,7 +136,7 @@ public class ReaderService extends Service {
       else if ("earlyPrefetch".equals(key)) earlyPrefetch = prefs.getBoolean(key, ReaderDefaults.EARLY_PREFETCH);
       else if ("adaptiveCapture".equals(key)) adaptiveCapture = prefs.getBoolean(key, ReaderDefaults.ADAPTIVE_CAPTURE);
       else if ("historyReuse".equals(key)) historyReuse = prefs.getBoolean(key, ReaderDefaults.HISTORY_REUSE);
-      else if ("historyPromote".equals(key)) historyPromote = prefs.getBoolean(key, ReaderDefaults.HISTORY_PROMOTE);
+      else if ("historyHidden".equals(key)) historyHidden = prefs.getBoolean(key, ReaderDefaults.HISTORY_HIDDEN);
     };
     p.registerOnSharedPreferenceChangeListener(preferenceListener);
     LinearLayout row = new LinearLayout(this);
@@ -308,6 +308,7 @@ public class ReaderService extends Service {
       case "sentence_gap_start": return "进入句间停顿";
       case "sentence_gap_end": return "句间停顿结束";
       case "play_complete": return "本页播放完成";
+      case "no_text_turn": return "本页未识别到文字，尝试继续翻页";
       case "turn_start": return "开始自动翻页";
       case "turn_complete": return "自动翻页完成";
       case "page_unchanged": return "翻页后画面未变化，已停止自动翻页";
@@ -554,7 +555,7 @@ public class ReaderService extends Service {
     c.setRequestProperty("X-Reader-Eager-First-Audio", eagerFirstAudio ? "on" : "off");
     c.setRequestProperty("X-Reader-Full-Page-Prefetch", earlyPrefetch ? "on" : "off");
     c.setRequestProperty("X-Reader-History-Reuse", historyReuse ? "on" : "off");
-    c.setRequestProperty("X-Reader-History-Promote", historyPromote ? "on" : "off");
+    c.setRequestProperty("X-Reader-History-Hidden", historyHidden ? "on" : "off");
     c.setRequestProperty(
         "X-Reader-Speech-Speed",
         String.format(java.util.Locale.US, "%.2f", speechSpeedPercent() / 100.0));
@@ -605,7 +606,7 @@ public class ReaderService extends Service {
                     debug("ocr_received");
                     index = 0;
                     if (sentences.length() == 0) {
-                      fail("此页未识别到文字，已停止");
+                      handleNoText();
                       return;
                     }
                     setStatus("整页已识别，准备语音…");
@@ -782,7 +783,11 @@ public class ReaderService extends Service {
       setStatus("本页朗读完成");
       return;
     }
-    setStatus("本页完成，正在向" + (left ? "左" : "右") + "翻页…");
+    turnPage("本页完成");
+  }
+
+  void turnPage(String completedStatus) {
+    setStatus(completedStatus + "，正在向" + (left ? "左" : "右") + "翻页…");
     int g = generation;
     debug("turn_start");
     int turn = flipGeneration;
@@ -797,7 +802,7 @@ public class ReaderService extends Service {
         () -> {
           if (active.isActive()) {
             debug("turn_wait_accessibility");
-            setStatus("本页完成，正在等待翻页无障碍连接…");
+            setStatus(completedStatus + "，正在等待翻页无障碍连接…");
           }
         },
         () -> afterTurn(g, turn),
@@ -807,6 +812,16 @@ public class ReaderService extends Service {
         reason -> {
           if (active.isActive()) fail(turnFailureMessage(reason));
         });
+  }
+
+  void handleNoText() {
+    if (!autoFlip) {
+      setRunning(false);
+      setStatus("本页未识别到文字");
+      return;
+    }
+    debug("no_text_turn");
+    turnPage("本页未识别到文字");
   }
 
   static String turnFailureMessage(int reason) {

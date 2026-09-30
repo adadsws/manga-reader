@@ -24,6 +24,8 @@ EVENTS = {
     'warmup_asr_ready':'ASR检查预热完成', 'warmup_ready':'启动预热全部完成',
     'warmup_error':'启动预热失败',
     'request_start':'收到请求', 'request_end':'请求完成', 'request_error':'请求处理异常',
+    'android_version_missing':'版本警告：连接的安卓未上报版本，可能是旧版；仍允许继续使用',
+    'android_version_mismatch':'版本警告：安卓与电脑版本不同；仍允许继续使用',
     'ocr_queued':'截图已接收，等待识别', 'ocr_model_loading':'首次加载识别模型',
     'ocr_model_ready':'识别模型就绪', 'ocr_start':'正在识别与排序', 'ocr_end':'识别完成',
     'ocr_error':'识别失败', 'tts_start':'开始生成语音', 'tts_chunk_start':'正在合成语音分段',
@@ -43,6 +45,7 @@ EVENTS = {
 }
 FIELDS = {'bytes':'字节', 'rows':'行数', 'chunks':'总段数', 'chunk':'当前段',
           'characters':'字数', 'seconds':'耗时秒', 'status':'HTTP', 'index':'播放单元',
+          'android_version':'安卓版本', 'computer_version':'电脑版本',
           'generation':'任务序号', 'auto':'自动翻页'}
 
 def format_event(data):
